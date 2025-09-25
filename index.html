@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Mapa de Voluntarios</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <style>
+    #map {
+      height: 100vh;
+      width: 100%;
+    }
+
+    /* --- Modal para añadir voluntarios --- */
+    .modal {
+      display: none;
+      position: fixed;
+      z-index: 1000;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0,0,0,0.5);
+      justify-content: center;
+      align-items: center;
+    }
+
+    .modal-content {
+      background: #fff;
+      padding: 20px;
+      border-radius: 12px;
+      width: 90%;
+      max-width: 400px;
+      box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+    }
+
+    .modal-content h2 {
+      margin-top: 0;
+    }
+
+    .modal-content input {
+      width: 100%;
+      padding: 8px;
+      margin: 6px 0;
+      font-size: 14px;
+    }
+
+    .modal-content button {
+      margin-top: 10px;
+      padding: 10px;
+      width: 100%;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    .close {
+      float: right;
+      font-size: 20px;
+      cursor: pointer;
+    }
+
+    /* --- Overlay de carga/guardado --- */
+    .overlay {
+      position: fixed;
+      z-index: 2000;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(255,255,255,0.9);
+      justify-content: center;
+      align-items: center;
+      font-size: 24px;
+      font-weight: bold;
+      color: #333;
+      display: none;
+    }
+
+    /* --- Popups más grandes --- */
+    .leaflet-popup-content {
+      font-size: 36px !important; /* antes 18px → ahora 36px */
+      line-height: 1.4;
+      max-width: 600px; /* antes 300px → ahora 600px */
+    }
+
+    .leaflet-popup-content b {
+      font-size: 40px !important; /* antes 20px → ahora 40px */
+    }
+
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <!-- Modal para añadir voluntario -->
+  <div id="voluntarioModal" class="modal">
+    <div class="modal-content">
+      <span class="close" onclick="cerrarModal()">&times;</span>
+      <h2>Añadir Voluntario</h2>
+      <input type="text" id="nombre" placeholder="Nombre completo (obligatorio)" required />
+      <input type="tel" id="telefono" placeholder="Teléfono (obligatorio)" required />
+      <input type="email" id="email" placeholder="Email (opcional)" />
+      <button onclick="guardarDatos()">Guardar</button>
+      <button onclick="cerrarModal()">Cancelar</button>
+    </div>
+  </div>
+
+  <!-- Overlay de carga inicial -->
+  <div id="loadingOverlay" class="overlay" style="display:flex;">
+    Cargando información...
+  </div>
+
+  <!-- Overlay de guardado -->
+  <div id="savingOverlay" class="overlay" style="display:none;">
+    Guardando información...
+  </div>
+
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script>
+    const URL_SHEET_SAVE = "https://script.google.com/macros/s/AKfycbxlrJirTd9MHH-ZYMclyiMwvJ43-UL--iFemOCTANLx7SOHmX2xTc4jkMwW-YmAFRhUAQ/exec";
+    const URL_SHEET_GET = "https://script.google.com/macros/s/AKfycbx8oNWuXhFCQssef1gGKibvrvSfiMEh7wMFek8uLLPP5MbVctPKawutGMreSXPyp_J1ZQ/exec";
+
+    var map = L.map('map').setView([40.22, -6.7], 12.4);
+
+    var calles = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '© OpenStreetMap'
+    }).addTo(map);
+
+    var satelite = L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      { attribution: 'Tiles © Esri' }
+    );
+
+    var topo = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+      maxZoom: 17,
+      attribution: 'Map data: © OpenStreetMap contributors, OpenTopoMap'
+    });
+
+    L.control.layers({
+      "Calles (OSM)": calles,
+      "Satélite": satelite,
+      "Topográfico": topo
+    }).addTo(map);
+
+    let tempCoords = null; // guarda coords del click
+
+    function abrirModal(coords) {
+      tempCoords = coords;
+      document.getElementById("voluntarioModal").style.display = "flex";
+    }
+
+    function cerrarModal() {
+      document.getElementById("voluntarioModal").style.display = "none";
+      tempCoords = null; // si se cierra, no se añade nada
+      document.getElementById("nombre").value = "";
+      document.getElementById("telefono").value = "";
+      document.getElementById("email").value = "";
+    }
+
+    function validarFormulario(nombre, telefono, email) {
+      if (!nombre) {
+        alert("El nombre es obligatorio.");
+        return false;
+      }
+      if (!telefono) {
+        alert("El teléfono es obligatorio.");
+        return false;
+      }
+      // Teléfono: 9 dígitos españoles o con prefijo internacional +34
+      const telRegex = /^(\+34)?[6789]\d{8}$/;
+      if (!telRegex.test(telefono)) {
+        alert("Introduce un teléfono válido (ej. 600123456 o +34600123456).");
+        return false;
+      }
+      if (email) {
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(email)) {
+          alert("Introduce un email válido o deja el campo vacío.");
+          return false;
+        }
+      }
+      return true;
+    }
+
+    function guardarDatos() {
+      if (!tempCoords) return;
+
+      var nombre = document.getElementById("nombre").value.trim();
+      var telefono = document.getElementById("telefono").value.trim();
+      var email = document.getElementById("email").value.trim();
+
+      if (!validarFormulario(nombre, telefono, email)) return;
+
+      var lat = tempCoords.lat;
+      var lng = tempCoords.lng;
+
+      document.getElementById("savingOverlay").style.display = "flex";
+
+      fetch(`${URL_SHEET_SAVE}?nombre=${encodeURIComponent(nombre)}&telefono=${encodeURIComponent(telefono)}&email=${encodeURIComponent(email)}&lat=${lat}&lng=${lng}`, {
+        method: 'POST'
+      })
+      .then(res => res.json())
+      .then(data => {
+        document.getElementById("savingOverlay").style.display = "none";
+
+        if (data.success) {
+          const isMobile = window.innerWidth < 600;
+          const fontSize = isMobile ? "22px" : "18px";
+          const titleSize = isMobile ? "24px" : "20px";
+
+          L.marker([lat, lng]).addTo(map)
+            .bindPopup(`
+              <div style="font-size:${fontSize};">
+                <b style="font-size:${titleSize};">${nombre}</b><br>
+                📞 ${telefono}<br>
+                ${email ? "📧 " + email : ""}
+              </div>
+            `, { maxWidth: 350 })
+            .openPopup();
+
+          cerrarModal();
+          alert("Voluntario guardado correctamente");
+        } else {
+          alert("Error: " + data.message);
+        }
+      })
+      .catch(err => {
+        document.getElementById("savingOverlay").style.display = "none";
+        alert("Error al enviar los datos: " + err);
+      });
+    }
+
+    map.on('click', function(e) {
+      abrirModal(e.latlng);
+    });
+
+    // Cargar voluntarios iniciales
+    fetch(URL_SHEET_GET)
+      .then(res => res.json())
+      .then(data => {
+        data.forEach(voluntario => {
+          if (voluntario.lat && voluntario.lng) {
+            const isMobile = window.innerWidth < 600;
+            const fontSize = isMobile ? "22px" : "18px";
+            const titleSize = isMobile ? "24px" : "20px";
+
+            L.marker([voluntario.lat, voluntario.lng]).addTo(map)
+              .bindPopup(`
+                <div style="font-size:${fontSize};">
+                  <b style="font-size:${titleSize};">${voluntario.nombre}</b><br>
+                  📞 ${voluntario.telefono}<br>
+                  ${voluntario.email ? "📧 " + voluntario.email : ""}
+                </div>
+              `, { maxWidth: 350 });
+          }
+        });
+        document.getElementById("loadingOverlay").style.display = "none";
+      })
+      .catch(err => {
+        console.error("Error al cargar voluntarios:", err);
+        alert("No se pudo cargar la información.");
+        document.getElementById("loadingOverlay").style.display = "none";
+      });
+  </script>
+</body>
+</html>
